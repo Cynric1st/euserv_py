@@ -2,7 +2,10 @@ name: EUserv Daily Renew
 
 on:
   schedule:
-    - cron: '0 12 * * *' # 北京时间晚上8点（UTC 北京时区+8）
+    # GitHub 调度器整点最堵，排队任务偶发被直接丢弃（无失败记录、无通知）。
+    # 因此避开 :00，并保留两个窗口做互补兜底。
+    - cron: '37 13 * * *' # 北京 21:37
+    - cron: '17 16 * * *' # 北京次日 00:17（备用窗口）
   workflow_dispatch:
 
 jobs:
