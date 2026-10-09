@@ -8,7 +8,7 @@ jobs:
       - uses: actions/setup-python@v5
         with: {python-version: '3.12'}
       - run: pip install -r requirements.txt
-      - run: python probe_panel2.py
+      - run: python probe_panel3.py
         env:
           EUSERV_EMAIL: ${{ secrets.EUSERV_EMAIL }}
           EUSERV_PASSWORD: ${{ secrets.EUSERV_PASSWORD }}
@@ -18,6 +18,6 @@ jobs:
         with:
           name: panel-pages
           path: |
-            login_response.html
-            get_*.html
+            login_post*.html
+            var*.html
           retention-days: 1
