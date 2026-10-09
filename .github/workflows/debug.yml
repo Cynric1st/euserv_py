@@ -1,0 +1,21 @@
+name: Debug panel structure
+on: workflow_dispatch
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - run: pip install -r requirements.txt
+      - run: python probe_panel.py
+        env:
+          EUSERV_EMAIL: ${{ secrets.EUSERV_EMAIL }}
+          EUSERV_PASSWORD: ${{ secrets.EUSERV_PASSWORD }}
+          EMAIL_PASS: ${{ secrets.EMAIL_PASS }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: orders-page
+          path: orders_page.html
+          retention-days: 1
