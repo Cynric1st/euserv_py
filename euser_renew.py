@@ -7,7 +7,8 @@ EUserv 自动续期脚本 - 多账号多线程版本
 
 import os
 import hashlib
-
+import hmac
+import struct
 import sys
 import io
 import re
@@ -102,12 +103,15 @@ class AccountConfig:
                  未配置时根据 email_pin（或 email）的域名自动推断。
     email_password: email_pin 邮箱的密码 / Gmail 应用专用密码。
     """
-    def __init__(self, email, password, email_pin='', email_password='', imap_server=''):
+    def __init__(self, email, password, email_pin='', email_password='', imap_server='', totp_secret=''):
         self.email = email
         self.password = password
         # email_pin 未配置则回退到 email
         self.email_pin = email_pin if email_pin else email
         self.email_password = email_password if email_password else password
+        # EUserv 验证器 App 2FA（TOTP）密钥，base32。
+        # 未配置时若账号被要求验证器 PIN，登录会明确报错。
+        self.totp_secret = totp_secret
         # imap_server 未配置则自动推断
         if imap_server:
             self.imap_server = imap_server
@@ -156,6 +160,7 @@ def load_accounts_from_env() -> List[AccountConfig]:
             password=password,
             email_pin=os.getenv(f"EMAIL_PIN{suffix}"),       # 可选，未配置则使用 EUSERV_EMAIL
             email_password=os.getenv(f"EMAIL_PASS{suffix}"),  # PIN 邮箱的密码（Gmail 应用专用密码等）
+            totp_secret=os.getenv(f"EUSERV_TOTP_SECRET{suffix}"),  # 验证器 App 2FA 密钥（base32，可选）
         ))
         i += 1
     return accounts
@@ -404,6 +409,28 @@ def calculate_operation(left: int, op: str, right: int, raw_text: str, silent: b
 
 
 
+def generate_totp(secret_b32: str, offset_steps: int = 0, period: int = 30, digits: int = 6) -> Optional[str]:
+    """RFC 6238 TOTP（验证器 App 标准，SHA1/30s/6位）。
+
+    offset_steps 允许 -1/0/+1 时间窗偏移，容忍客户端与服务器时钟小偏差。
+    secret 为验证器设置时显示的 base32 密钥（空格/横线自动忽略）。
+    """
+    try:
+        import base64 as _b64
+        cleaned = re.sub(r'[\s\-]', '', secret_b32 or '').upper()
+        if not cleaned:
+            return None
+        key = _b64.b32decode(cleaned + '=' * (-len(cleaned) % 8))
+        counter = int(time.time() // period) + offset_steps
+        digest = hmac.new(key, struct.pack('>Q', counter), hashlib.sha1).digest()
+        o = digest[-1] & 0x0F
+        code = (struct.unpack('>I', digest[o:o + 4])[0] & 0x7FFFFFFF) % (10 ** digits)
+        return str(code).zfill(digits)
+    except Exception as e:
+        logger.error(f"❌ TOTP 生成失败（密钥格式错误？）: {e}")
+        return None
+
+
 def get_euserv_pin(email: str, email_password: str, imap_server: str,
                    max_retries: int = 6, retry_interval: int = 5,
                    max_age_seconds: int = 90) -> Optional[str]:
@@ -614,6 +641,42 @@ class EUserv:
                         logger.info("✅ 验证码验证成功")
                         break
 
+            # 处理验证器 App 2FA（EUserv 新增："enter the PIN that is shown in
+            # your authenticator app"）。表单与旧邮件 PIN 流程同构。
+            if 'authenticator app' in response.text:
+                self.c_id = soup.find("input", {"name": "c_id"})["value"]
+                logger.info("⚠️ 需要验证器 App PIN（TOTP 2FA）")
+                if not self.config.totp_secret:
+                    logger.error("❌ 账号已开启验证器 2FA，但未配置 EUSERV_TOTP_SECRET（验证器设置时的 base32 密钥）")
+                    return False
+                confirmed = False
+                for drift in (0, -1, 1):
+                    pin = generate_totp(self.config.totp_secret, offset_steps=drift)
+                    if not pin:
+                        return False
+                    login_confirm_data = {
+                        'pin': pin,
+                        'save_for_auto_login': 'on',  # 记住本设备：种信任 Cookie，下次免 2FA
+                        'sess_id': sess_id,
+                        'Submit': 'Confirm',
+                        'subaction': 'login',
+                        'c_id': self.c_id,
+                    }
+                    response = self.session.post(url, headers=headers, data=login_confirm_data)
+                    response.raise_for_status()
+                    if 'authenticator app' in response.text:
+                        logger.warning(f"TOTP PIN 被拒（时间窗偏移 {drift}），尝试下一个窗口...")
+                        time.sleep(2)
+                        continue
+                    logger.info(f"✅ 验证器 PIN 验证通过（时间窗偏移 {drift}）")
+                    # 信任设备 Cookie 立即持久化（n7 等持久环境下次登录免 2FA）
+                    self._save_cookies()
+                    confirmed = True
+                    break
+                if not confirmed:
+                    logger.error("❌ 验证器 PIN 三个时间窗均被拒（密钥错误或时钟偏差过大）")
+                    return False
+
             # 处理 PIN 验证
             # 若之前 Cookie 有效，服务器不会返回 PIN 页面，直接跳过这段
             if 'PIN that you receive via email' in response.text:
@@ -647,7 +710,15 @@ class EUserv:
                 self._save_cookies()
                 logger.info("🍪 PIN 验证完成，信任设备 Cookie 已保存，下次登录将跳过 PIN")
 
-            # 检查登录成功
+            # 检查登录成功（先排除"看起来像成功"的中间页）
+            # ★ 修复：2FA/PIN 中间页与登录页都含 logout/customer 字样，
+            #   旧判定 'logout'+'customer' 会假阳性，导致后续 0 台服务器。
+            if 'To finish the login process' in response.text:
+                logger.error(f"❌ 账号 {self.config.email} 登录失败：仍停留在 PIN/2FA 验证页")
+                return False
+            if 'Email address or customer ID:' in response.text and 'password' in response.text.lower():
+                logger.error(f"❌ 账号 {self.config.email} 登录失败：会话未生效，被退回登录页")
+                return False
             success_checks = [
                 'Hello' in response.text,
                 'Confirm or change your customer data here' in response.text,
@@ -1290,7 +1361,14 @@ def main():
     logger.info("\n" + "=" * 60)
     logger.info("执行完成")
     logger.info("=" * 60)
-    sys.exit(0)
+    # ★ 修复：退出码反映真实结果。旧版恒 exit 0，0 台服务器/登录失败在
+    # GitHub Actions 上也是绿灯，问题被完全掩盖。
+    def _failed(r):
+        if r.get('error_type') in ('login', 'get_servers', 'exception'):
+            return True
+        renew = r.get('renew_results') or []
+        return any(not rr.get('success') for rr in renew)
+    sys.exit(1 if any(_failed(r) for r in all_results) else 0)
 
 
 if __name__ == "__main__":

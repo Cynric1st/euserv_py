@@ -38,6 +38,7 @@
 | `EUSERV_EMAIL` | **是** | Euserv 登录邮箱。多账号请配置 `EUSERV_EMAIL2` 等。 |
 | `EUSERV_PASSWORD` | **是** | Euserv 登录密码。多账号请配置 `EUSERV_PASSWORD2` 等。 |
 | `EMAIL_PASS` | **是** | 邮箱应用专用密码（需开启 IMAP）。多账号配置 `EMAIL_PASS2` 等。 |
+| `EUSERV_TOTP_SECRET` | 视情况 | EUserv 验证器 App 2FA 的 base32 密钥（开启 2FA 的账号**必须**）。多账号配置 `EUSERV_TOTP_SECRET2` 等。 |
 | `TG_BOT_TOKEN` | 否 | Telegram Bot Token。 |
 | `TG_CHAT_ID` | 否 | Telegram 用户 ID。 |
 | `BARK_URL` | 否 | iOS Bark 推送地址。例如：`https://api.day.app/your_key/` |

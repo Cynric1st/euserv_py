@@ -28,6 +28,7 @@ jobs:
           EUSERV_EMAIL: ${{ secrets.EUSERV_EMAIL }}
           EUSERV_PASSWORD: ${{ secrets.EUSERV_PASSWORD }}
           EMAIL_PASS: ${{ secrets.EMAIL_PASS }}
+          EUSERV_TOTP_SECRET: ${{ secrets.EUSERV_TOTP_SECRET }}
           # 账号 2~5（可选，不配置则自动跳过）
           EUSERV_EMAIL2: ${{ secrets.EUSERV_EMAIL2 }}
           EUSERV_PASSWORD2: ${{ secrets.EUSERV_PASSWORD2 }}
